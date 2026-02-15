@@ -13,8 +13,8 @@ import {
   updateProfile,
   addTransaction,
   fetchTransactions,
-  createWithdrawal,
 } from '../lib/database';
+import { supabase } from '../lib/supabase';
 import { Loader2 } from 'lucide-react';
 import { Logo } from '../components/Logo';
 
@@ -51,13 +51,21 @@ export type AppState = {
   currentPage: string;
 };
 
+type WithdrawResult = {
+  success: boolean;
+  error?: string;
+  txHash?: string;
+  newBalance?: number;
+};
+
 type AppContextType = AppState & {
   setPage: (page: string) => void;
   earnFromAd: (amount: number) => void;
   earnFromLink: (amount: number) => void;
   earnFromOffer: (amount: number) => void;
   toggleMining: () => void;
-  withdraw: (amount: number, method: string, address: string, fee: number) => Promise<boolean>;
+  withdraw: (amount: number, methodId: string, address: string, fee: number, captchaToken?: string) => Promise<WithdrawResult>;
+  refreshProfile: () => Promise<void>;
   satoshiToUsd: (sat: number) => string;
 };
 
@@ -427,47 +435,104 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [persistProfile, recordTx]);
 
   // ----------------------------------------------------------
-  // Withdraw
+  // Refresh profile from DB
+  // ----------------------------------------------------------
+  const refreshProfile = useCallback(async () => {
+    if (!user) return;
+    const profile = await fetchProfile(user.id);
+    if (profile) {
+      setState((s) => ({
+        ...s,
+        balanceSatoshi: profile.balance_satoshi,
+        totalEarned: profile.total_earned,
+        todayEarned: profile.today_earned,
+      }));
+    }
+  }, [user]);
+
+  // ----------------------------------------------------------
+  // Withdraw — calls Vercel serverless API → FaucetPay
   // ----------------------------------------------------------
   const withdraw = useCallback(
     async (
       amount: number,
-      method: string,
+      methodId: string,
       address: string,
-      fee: number
-    ): Promise<boolean> => {
+      _fee: number,
+      captchaToken?: string,
+    ): Promise<WithdrawResult> => {
       const s = stateRef.current;
-      if (s.balanceSatoshi < amount) return false;
-
-      const newBalance = s.balanceSatoshi - amount;
-
-      const activity: ActivityItem = {
-        id: Date.now().toString(),
-        type: 'withdraw',
-        description: `Withdrawal: ${amount.toLocaleString()} sat via ${method}`,
-        amount,
-        currency: 'sat',
-        timestamp: new Date(),
-      };
-
-      setState((prev) => ({
-        ...prev,
-        balanceSatoshi: newBalance,
-        activities: [activity, ...prev.activities].slice(0, 50),
-      }));
-
-      if (user) {
-        await updateProfile(user.id, { balance_satoshi: newBalance });
-        await createWithdrawal(user.id, method, amount, fee, address);
-        await addTransaction(
-          user.id,
-          'withdraw',
-          `Withdrawal: ${amount.toLocaleString()} sat via ${method}`,
-          amount
-        );
+      if (s.balanceSatoshi < amount) {
+        return { success: false, error: 'Insufficient balance' };
       }
 
-      return true;
+      if (!user) {
+        return { success: false, error: 'Not authenticated' };
+      }
+
+      try {
+        // Get the user's current session token
+        const { data: sessionData } = await supabase.auth.getSession();
+        const accessToken = sessionData?.session?.access_token;
+
+        if (!accessToken) {
+          return { success: false, error: 'Session expired. Please log in again.' };
+        }
+
+        // Call the serverless API
+        const response = await fetch('/api/withdraw', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`,
+          },
+          body: JSON.stringify({
+            amount,
+            address,
+            methodId,
+            captchaToken,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (!response.ok || !data.success) {
+          return {
+            success: false,
+            error: data.error || 'Withdrawal failed. Please try again.',
+          };
+        }
+
+        // Success! Update local state
+        const newBalance = data.new_balance ?? s.balanceSatoshi - amount;
+
+        const activity: ActivityItem = {
+          id: Date.now().toString(),
+          type: 'withdraw',
+          description: `Withdrawal: ${amount.toLocaleString()} sat via ${data.currency || methodId.toUpperCase()}`,
+          amount,
+          currency: 'sat',
+          timestamp: new Date(),
+        };
+
+        setState((prev) => ({
+          ...prev,
+          balanceSatoshi: newBalance,
+          activities: [activity, ...prev.activities].slice(0, 50),
+        }));
+
+        return {
+          success: true,
+          txHash: data.tx_hash,
+          newBalance,
+        };
+      } catch (err: unknown) {
+        console.error('Withdrawal error:', err);
+        return {
+          success: false,
+          error: 'Network error. Please check your connection and try again.',
+        };
+      }
     },
     [user]
   );
@@ -510,6 +575,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         earnFromOffer,
         toggleMining,
         withdraw,
+        refreshProfile,
         satoshiToUsd,
       }}
     >

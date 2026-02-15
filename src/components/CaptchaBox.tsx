@@ -6,11 +6,12 @@ const HCAPTCHA_SITE_KEY = 'a69418a6-d25e-4448-b400-8dc40802fe78';
 
 interface CaptchaBoxProps {
   onStatusChange: (verified: boolean) => void;
+  onToken?: (token: string) => void;
   resetTrigger?: number;
   compact?: boolean;
 }
 
-export function CaptchaBox({ onStatusChange, resetTrigger = 0, compact = false }: CaptchaBoxProps) {
+export function CaptchaBox({ onStatusChange, onToken, resetTrigger = 0, compact = false }: CaptchaBoxProps) {
   const hcaptchaRef = useRef<HCaptcha>(null);
   const [verified, setVerified] = useState(false);
 
@@ -53,9 +54,10 @@ export function CaptchaBox({ onStatusChange, resetTrigger = 0, compact = false }
         <HCaptcha
           ref={hcaptchaRef}
           sitekey={HCAPTCHA_SITE_KEY}
-          onVerify={() => {
+          onVerify={(token) => {
             setVerified(true);
             onStatusChange(true);
+            onToken?.(token);
           }}
           onExpire={() => {
             setVerified(false);
