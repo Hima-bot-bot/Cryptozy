@@ -1,4 +1,5 @@
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import {
   TrendingUp, Tv, Link2, Gift, Cpu, ArrowUpRight, ArrowDownRight,
   Clock, Bitcoin, DollarSign, Users, Flame
@@ -32,6 +33,7 @@ function timeAgo(date: Date) {
 
 export function Dashboard() {
   const app = useApp();
+  const { username } = useAuth();
 
   const stats = [
     {
@@ -92,7 +94,7 @@ export function Dashboard() {
       {/* Welcome */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-white">Welcome back, {app.username}! 👋</h1>
+          <h1 className="text-2xl font-bold text-white">Welcome back, {username}! 👋</h1>
           <p className="text-sm text-gray-400 mt-1">Here's your earning overview for today</p>
         </div>
         <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-gradient-to-r from-amber-500/10 to-orange-500/10 border border-amber-500/20">

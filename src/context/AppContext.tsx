@@ -1,8 +1,30 @@
-import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from 'react';
+import {
+  createContext,
+  useContext,
+  useState,
+  useCallback,
+  useEffect,
+  useRef,
+  type ReactNode,
+} from 'react';
+import { useAuth } from './AuthContext';
+import {
+  fetchProfile,
+  updateProfile,
+  addTransaction,
+  fetchTransactions,
+  createWithdrawal,
+} from '../lib/database';
+import { Loader2 } from 'lucide-react';
+import { Logo } from '../components/Logo';
+
+// ============================================================
+// Types
+// ============================================================
 
 export type ActivityItem = {
   id: string;
-  type: 'ad' | 'shortlink' | 'offer' | 'mining' | 'referral' | 'withdraw';
+  type: 'ad' | 'shortlink' | 'offer' | 'mining' | 'referral' | 'withdraw' | 'bonus';
   description: string;
   amount: number;
   currency: string;
@@ -10,7 +32,6 @@ export type ActivityItem = {
 };
 
 export type AppState = {
-  username: string;
   balanceSatoshi: number;
   totalEarned: number;
   todayEarned: number;
@@ -36,9 +57,54 @@ type AppContextType = AppState & {
   earnFromLink: (amount: number) => void;
   earnFromOffer: (amount: number) => void;
   toggleMining: () => void;
-  withdraw: (amount: number) => void;
+  withdraw: (amount: number, method: string, address: string, fee: number) => Promise<boolean>;
   satoshiToUsd: (sat: number) => string;
 };
+
+// ============================================================
+// Helpers
+// ============================================================
+
+const defaultState: AppState = {
+  balanceSatoshi: 0,
+  totalEarned: 0,
+  todayEarned: 0,
+  adsWatched: 0,
+  linksVisited: 0,
+  offersCompleted: 0,
+  miningActive: false,
+  hashRate: 0,
+  miningEarned: 0,
+  referralCode: '',
+  referralCount: 0,
+  referralEarnings: 0,
+  level: 1,
+  xp: 0,
+  xpToNext: 1000,
+  activities: [],
+  currentPage: 'dashboard',
+};
+
+function calcXp(
+  currentXp: number,
+  currentLevel: number,
+  currentXpToNext: number,
+  xpGain: number
+) {
+  let xp = currentXp + xpGain;
+  let level = currentLevel;
+  let xpToNext = currentXpToNext;
+  if (xp >= xpToNext) {
+    xp = xp - xpToNext;
+    level += 1;
+    xpToNext = Math.floor(xpToNext * 1.3);
+  }
+  return { xp, level, xpToNext };
+}
+
+// ============================================================
+// Context
+// ============================================================
 
 const AppContext = createContext<AppContextType | null>(null);
 
@@ -48,117 +114,260 @@ export function useApp() {
   return ctx;
 }
 
+// ============================================================
+// Provider
+// ============================================================
+
 export function AppProvider({ children }: { children: ReactNode }) {
-  const [state, setState] = useState<AppState>({
-    username: 'CryptoUser',
-    balanceSatoshi: 48750,
-    totalEarned: 1250000,
-    todayEarned: 4820,
-    adsWatched: 342,
-    linksVisited: 189,
-    offersCompleted: 27,
-    miningActive: false,
-    hashRate: 0,
-    miningEarned: 0,
-    referralCode: 'CRYPTOZY-X7K9',
-    referralCount: 14,
-    referralEarnings: 85000,
-    level: 7,
-    xp: 680,
-    xpToNext: 1000,
-    activities: [
-      { id: '1', type: 'ad', description: 'Watched premium ad', amount: 150, currency: 'sat', timestamp: new Date(Date.now() - 300000) },
-      { id: '2', type: 'shortlink', description: 'Completed short link', amount: 80, currency: 'sat', timestamp: new Date(Date.now() - 900000) },
-      { id: '3', type: 'offer', description: 'Survey completed', amount: 5000, currency: 'sat', timestamp: new Date(Date.now() - 1800000) },
-      { id: '4', type: 'mining', description: 'Mining reward', amount: 25, currency: 'sat', timestamp: new Date(Date.now() - 3600000) },
-      { id: '5', type: 'referral', description: 'Referral commission', amount: 500, currency: 'sat', timestamp: new Date(Date.now() - 7200000) },
-    ],
-    currentPage: 'dashboard',
-  });
+  const { user } = useAuth();
+  const [profileLoading, setProfileLoading] = useState(true);
+  const [state, setState] = useState<AppState>(defaultState);
 
-  const setPage = useCallback((page: string) => {
-    setState(s => ({ ...s, currentPage: page }));
-  }, []);
+  // Refs for async access to latest values
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const miningAccumRef = useRef(0);
 
-  const addActivity = useCallback((type: ActivityItem['type'], description: string, amount: number) => {
-    const activity: ActivityItem = {
-      id: Date.now().toString(),
-      type,
-      description,
-      amount,
-      currency: 'sat',
-      timestamp: new Date(),
-    };
-    setState(s => ({
-      ...s,
-      activities: [activity, ...s.activities].slice(0, 50),
-    }));
-  }, []);
+  // ----------------------------------------------------------
+  // Load profile + recent transactions from Supabase
+  // ----------------------------------------------------------
+  useEffect(() => {
+    if (!user) return;
+    let cancelled = false;
 
-  const addXp = useCallback((amount: number) => {
-    setState(s => {
-      let newXp = s.xp + amount;
-      let newLevel = s.level;
-      let newXpToNext = s.xpToNext;
-      if (newXp >= newXpToNext) {
-        newXp = newXp - newXpToNext;
-        newLevel += 1;
-        newXpToNext = Math.floor(newXpToNext * 1.3);
+    async function loadData() {
+      try {
+        const [profile, transactions] = await Promise.all([
+          fetchProfile(user!.id),
+          fetchTransactions(user!.id, 50),
+        ]);
+
+        if (cancelled) return;
+
+        if (profile) {
+          // Reset today_earned if it's a new day
+          const profileDay = new Date(profile.updated_at).toDateString();
+          const today = new Date().toDateString();
+          const todayEarned = profileDay === today ? profile.today_earned : 0;
+
+          if (profileDay !== today) {
+            updateProfile(user!.id, { today_earned: 0 });
+          }
+
+          setState((s) => ({
+            ...s,
+            balanceSatoshi: profile.balance_satoshi,
+            totalEarned: profile.total_earned,
+            todayEarned,
+            adsWatched: profile.ads_watched,
+            linksVisited: profile.links_visited,
+            offersCompleted: profile.offers_completed,
+            miningEarned: profile.mining_earned,
+            referralCode: profile.referral_code || '',
+            referralCount: profile.referral_count,
+            referralEarnings: profile.referral_earnings,
+            level: profile.level,
+            xp: profile.xp,
+            xpToNext: profile.xp_to_next,
+            activities: transactions.map((t) => ({
+              id: t.id,
+              type: t.type as ActivityItem['type'],
+              description: t.description || '',
+              amount: Math.abs(t.amount),
+              currency: 'sat',
+              timestamp: new Date(t.created_at),
+            })),
+          }));
+        }
+      } catch (err) {
+        console.error('Failed to load profile:', err);
+      } finally {
+        if (!cancelled) setProfileLoading(false);
       }
-      return { ...s, xp: newXp, level: newLevel, xpToNext: newXpToNext };
-    });
+    }
+
+    loadData();
+    return () => {
+      cancelled = true;
+    };
+  }, [user]);
+
+  // ----------------------------------------------------------
+  // DB helpers (fire-and-forget for non-critical writes)
+  // ----------------------------------------------------------
+  const persistProfile = useCallback(
+    (updates: Record<string, number | string>) => {
+      if (!user) return;
+      updateProfile(user.id, updates);
+    },
+    [user]
+  );
+
+  const recordTx = useCallback(
+    (type: string, description: string, amount: number) => {
+      if (!user) return;
+      addTransaction(user.id, type, description, amount);
+    },
+    [user]
+  );
+
+  // ----------------------------------------------------------
+  // Navigation
+  // ----------------------------------------------------------
+  const setPage = useCallback((page: string) => {
+    setState((s) => ({ ...s, currentPage: page }));
   }, []);
 
-  const earnFromAd = useCallback((amount: number) => {
-    setState(s => ({
-      ...s,
-      balanceSatoshi: s.balanceSatoshi + amount,
-      totalEarned: s.totalEarned + amount,
-      todayEarned: s.todayEarned + amount,
-      adsWatched: s.adsWatched + 1,
-    }));
-    addActivity('ad', 'Watched ad', amount);
-    addXp(10);
-  }, [addActivity, addXp]);
+  // ----------------------------------------------------------
+  // Earn from Ad
+  // ----------------------------------------------------------
+  const earnFromAd = useCallback(
+    (amount: number) => {
+      const s = stateRef.current;
+      const { xp, level, xpToNext } = calcXp(s.xp, s.level, s.xpToNext, 10);
+      const newBalance = s.balanceSatoshi + amount;
+      const newTotal = s.totalEarned + amount;
+      const newToday = s.todayEarned + amount;
+      const newAds = s.adsWatched + 1;
 
-  const earnFromLink = useCallback((amount: number) => {
-    setState(s => ({
-      ...s,
-      balanceSatoshi: s.balanceSatoshi + amount,
-      totalEarned: s.totalEarned + amount,
-      todayEarned: s.todayEarned + amount,
-      linksVisited: s.linksVisited + 1,
-    }));
-    addActivity('shortlink', 'Completed short link', amount);
-    addXp(8);
-  }, [addActivity, addXp]);
+      const activity: ActivityItem = {
+        id: Date.now().toString(),
+        type: 'ad',
+        description: `Watched ad (+${amount} sat)`,
+        amount,
+        currency: 'sat',
+        timestamp: new Date(),
+      };
 
-  const earnFromOffer = useCallback((amount: number) => {
-    setState(s => ({
-      ...s,
-      balanceSatoshi: s.balanceSatoshi + amount,
-      totalEarned: s.totalEarned + amount,
-      todayEarned: s.todayEarned + amount,
-      offersCompleted: s.offersCompleted + 1,
-    }));
-    addActivity('offer', 'Completed offer', amount);
-    addXp(25);
-  }, [addActivity, addXp]);
+      setState((prev) => ({
+        ...prev,
+        balanceSatoshi: newBalance,
+        totalEarned: newTotal,
+        todayEarned: newToday,
+        adsWatched: newAds,
+        xp,
+        level,
+        xpToNext,
+        activities: [activity, ...prev.activities].slice(0, 50),
+      }));
 
-  const toggleMining = useCallback(() => {
-    setState(s => ({
-      ...s,
-      miningActive: !s.miningActive,
-      hashRate: !s.miningActive ? Math.floor(Math.random() * 30) + 15 : 0,
-    }));
-  }, []);
+      persistProfile({
+        balance_satoshi: newBalance,
+        total_earned: newTotal,
+        today_earned: newToday,
+        ads_watched: newAds,
+        level,
+        xp,
+        xp_to_next: xpToNext,
+      });
+      recordTx('ad', `Watched ad (+${amount} sat)`, amount);
+    },
+    [persistProfile, recordTx]
+  );
 
-  // Mining interval
+  // ----------------------------------------------------------
+  // Earn from Short Link
+  // ----------------------------------------------------------
+  const earnFromLink = useCallback(
+    (amount: number) => {
+      const s = stateRef.current;
+      const { xp, level, xpToNext } = calcXp(s.xp, s.level, s.xpToNext, 8);
+      const newBalance = s.balanceSatoshi + amount;
+      const newTotal = s.totalEarned + amount;
+      const newToday = s.todayEarned + amount;
+      const newLinks = s.linksVisited + 1;
+
+      const activity: ActivityItem = {
+        id: Date.now().toString(),
+        type: 'shortlink',
+        description: `Completed short link (+${amount} sat)`,
+        amount,
+        currency: 'sat',
+        timestamp: new Date(),
+      };
+
+      setState((prev) => ({
+        ...prev,
+        balanceSatoshi: newBalance,
+        totalEarned: newTotal,
+        todayEarned: newToday,
+        linksVisited: newLinks,
+        xp,
+        level,
+        xpToNext,
+        activities: [activity, ...prev.activities].slice(0, 50),
+      }));
+
+      persistProfile({
+        balance_satoshi: newBalance,
+        total_earned: newTotal,
+        today_earned: newToday,
+        links_visited: newLinks,
+        level,
+        xp,
+        xp_to_next: xpToNext,
+      });
+      recordTx('shortlink', `Completed short link (+${amount} sat)`, amount);
+    },
+    [persistProfile, recordTx]
+  );
+
+  // ----------------------------------------------------------
+  // Earn from Offer
+  // ----------------------------------------------------------
+  const earnFromOffer = useCallback(
+    (amount: number) => {
+      const s = stateRef.current;
+      const { xp, level, xpToNext } = calcXp(s.xp, s.level, s.xpToNext, 25);
+      const newBalance = s.balanceSatoshi + amount;
+      const newTotal = s.totalEarned + amount;
+      const newToday = s.todayEarned + amount;
+      const newOffers = s.offersCompleted + 1;
+
+      const activity: ActivityItem = {
+        id: Date.now().toString(),
+        type: 'offer',
+        description: `Completed offer (+${amount.toLocaleString()} sat)`,
+        amount,
+        currency: 'sat',
+        timestamp: new Date(),
+      };
+
+      setState((prev) => ({
+        ...prev,
+        balanceSatoshi: newBalance,
+        totalEarned: newTotal,
+        todayEarned: newToday,
+        offersCompleted: newOffers,
+        xp,
+        level,
+        xpToNext,
+        activities: [activity, ...prev.activities].slice(0, 50),
+      }));
+
+      persistProfile({
+        balance_satoshi: newBalance,
+        total_earned: newTotal,
+        today_earned: newToday,
+        offers_completed: newOffers,
+        level,
+        xp,
+        xp_to_next: xpToNext,
+      });
+      recordTx('offer', `Completed offer (+${amount.toLocaleString()} sat)`, amount);
+    },
+    [persistProfile, recordTx]
+  );
+
+  // ----------------------------------------------------------
+  // Mining: local tick every 3 s
+  // ----------------------------------------------------------
   useEffect(() => {
     if (!state.miningActive) return;
     const interval = setInterval(() => {
       const reward = Math.floor(Math.random() * 3) + 1;
-      setState(s => ({
+      miningAccumRef.current += reward;
+      setState((s) => ({
         ...s,
         balanceSatoshi: s.balanceSatoshi + reward,
         totalEarned: s.totalEarned + reward,
@@ -170,30 +379,140 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => clearInterval(interval);
   }, [state.miningActive]);
 
-  const withdraw = useCallback((amount: number) => {
-    setState(s => {
-      if (s.balanceSatoshi < amount) return s;
-      return { ...s, balanceSatoshi: s.balanceSatoshi - amount };
-    });
-    addActivity('withdraw', `Withdrawal of ${amount} sat`, amount);
-  }, [addActivity]);
+  // Mining: persist to DB every 15 s
+  useEffect(() => {
+    if (!state.miningActive || !user) return;
+    const interval = setInterval(() => {
+      const accum = miningAccumRef.current;
+      if (accum > 0) {
+        miningAccumRef.current = 0;
+        const s = stateRef.current;
+        persistProfile({
+          balance_satoshi: s.balanceSatoshi,
+          total_earned: s.totalEarned,
+          today_earned: s.todayEarned,
+          mining_earned: s.miningEarned,
+        });
+        recordTx('mining', `Mining reward: ${accum} sat`, accum);
+      }
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [state.miningActive, user, persistProfile, recordTx]);
 
+  // Toggle mining on / off
+  const toggleMining = useCallback(() => {
+    const wasActive = stateRef.current.miningActive;
+
+    // Persist remaining earnings when stopping
+    if (wasActive) {
+      const accum = miningAccumRef.current;
+      if (accum > 0) {
+        miningAccumRef.current = 0;
+        const s = stateRef.current;
+        persistProfile({
+          balance_satoshi: s.balanceSatoshi,
+          total_earned: s.totalEarned,
+          today_earned: s.todayEarned,
+          mining_earned: s.miningEarned,
+        });
+        recordTx('mining', `Mining session: ${accum} sat earned`, accum);
+      }
+    }
+
+    setState((s) => ({
+      ...s,
+      miningActive: !s.miningActive,
+      hashRate: !s.miningActive ? Math.floor(Math.random() * 30) + 15 : 0,
+    }));
+  }, [persistProfile, recordTx]);
+
+  // ----------------------------------------------------------
+  // Withdraw
+  // ----------------------------------------------------------
+  const withdraw = useCallback(
+    async (
+      amount: number,
+      method: string,
+      address: string,
+      fee: number
+    ): Promise<boolean> => {
+      const s = stateRef.current;
+      if (s.balanceSatoshi < amount) return false;
+
+      const newBalance = s.balanceSatoshi - amount;
+
+      const activity: ActivityItem = {
+        id: Date.now().toString(),
+        type: 'withdraw',
+        description: `Withdrawal: ${amount.toLocaleString()} sat via ${method}`,
+        amount,
+        currency: 'sat',
+        timestamp: new Date(),
+      };
+
+      setState((prev) => ({
+        ...prev,
+        balanceSatoshi: newBalance,
+        activities: [activity, ...prev.activities].slice(0, 50),
+      }));
+
+      if (user) {
+        await updateProfile(user.id, { balance_satoshi: newBalance });
+        await createWithdrawal(user.id, method, amount, fee, address);
+        await addTransaction(
+          user.id,
+          'withdraw',
+          `Withdrawal: ${amount.toLocaleString()} sat via ${method}`,
+          amount
+        );
+      }
+
+      return true;
+    },
+    [user]
+  );
+
+  // ----------------------------------------------------------
+  // Util
+  // ----------------------------------------------------------
   const satoshiToUsd = useCallback((sat: number) => {
     const btcPrice = 67000;
     return ((sat / 100000000) * btcPrice).toFixed(4);
   }, []);
 
+  // ----------------------------------------------------------
+  // Loading screen while profile loads
+  // ----------------------------------------------------------
+  if (profileLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0e1a] flex flex-col items-center justify-center gap-6">
+        <Logo size={64} showText={false} />
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="w-6 h-6 text-amber-400 animate-spin" />
+          <p className="text-sm text-gray-500 font-medium">
+            Loading your profile...
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ----------------------------------------------------------
+  // Render
+  // ----------------------------------------------------------
   return (
-    <AppContext.Provider value={{
-      ...state,
-      setPage,
-      earnFromAd,
-      earnFromLink,
-      earnFromOffer,
-      toggleMining,
-      withdraw,
-      satoshiToUsd,
-    }}>
+    <AppContext.Provider
+      value={{
+        ...state,
+        setPage,
+        earnFromAd,
+        earnFromLink,
+        earnFromOffer,
+        toggleMining,
+        withdraw,
+        satoshiToUsd,
+      }}
+    >
       {children}
     </AppContext.Provider>
   );

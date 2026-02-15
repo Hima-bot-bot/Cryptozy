@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { Logo } from './Logo';
 import {
   LayoutDashboard, Tv, Link2, Gift, Cpu, Wallet, Users,
-  Menu, X, Zap, ChevronRight
+  Menu, X, Zap, ChevronRight, LogOut
 } from 'lucide-react';
 
 const navItems = [
@@ -18,6 +19,7 @@ const navItems = [
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const { currentPage, setPage, balanceSatoshi, satoshiToUsd, level, xp, xpToNext, miningActive } = useApp();
+  const auth = useAuth();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
@@ -87,16 +89,23 @@ export function Layout({ children }: { children: React.ReactNode }) {
           })}
         </nav>
 
-        {/* Footer */}
+        {/* User footer with logout */}
         <div className="p-4 border-t border-gray-800/50">
           <div className="flex items-center gap-3">
             <div className="w-8 h-8 rounded-full bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center text-xs font-bold text-white">
-              CU
+              {auth.username.charAt(0).toUpperCase()}
             </div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium truncate">CryptoUser</p>
-              <p className="text-[10px] text-gray-500">Member since 2024</p>
+              <p className="text-sm font-medium truncate">{auth.username}</p>
+              <p className="text-[10px] text-gray-500 truncate">{auth.user?.email}</p>
             </div>
+            <button
+              onClick={() => auth.signOut()}
+              className="p-1.5 rounded-lg text-gray-500 hover:text-red-400 hover:bg-red-500/10 transition-all"
+              title="Sign Out"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
           </div>
         </div>
       </aside>
