@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Logo } from '../components/Logo';
 import { useAuth } from '../context/AuthContext';
+import { CaptchaBox } from '../components/CaptchaBox';
 import { Mail, Lock, User, Eye, EyeOff, ArrowRight, AlertCircle, CheckCircle2, Loader2, Shield, Zap, Globe } from 'lucide-react';
 
 export function Auth() {
@@ -14,6 +15,10 @@ export function Auth() {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
+  // Captcha state (registration only)
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -21,6 +26,12 @@ export function Auth() {
     setLoading(true);
 
     if (mode === 'register') {
+      // Require captcha for registration
+      if (!captchaVerified) {
+        setError('Please complete the captcha verification');
+        setLoading(false);
+        return;
+      }
       if (username.length < 3) {
         setError('Username must be at least 3 characters');
         setLoading(false);
@@ -34,8 +45,11 @@ export function Auth() {
       const result = await signUp(email, password, username);
       if (result.error) {
         setError(result.error);
+        // Reset captcha on error so they can try again
+        setCaptchaResetKey(k => k + 1);
       } else {
         setSuccess('Account created successfully! Check your email to confirm your account, then sign in.');
+        setCaptchaResetKey(k => k + 1);
       }
     } else {
       const result = await signIn(email, password);
@@ -50,6 +64,8 @@ export function Auth() {
     setMode(mode === 'login' ? 'register' : 'login');
     setError('');
     setSuccess('');
+    setCaptchaVerified(false);
+    setCaptchaResetKey(k => k + 1);
   };
 
   return (
@@ -79,7 +95,7 @@ export function Auth() {
             {(['login', 'register'] as const).map(m => (
               <button
                 key={m}
-                onClick={() => { setMode(m); setError(''); setSuccess(''); }}
+                onClick={() => { setMode(m); setError(''); setSuccess(''); setCaptchaResetKey(k => k + 1); }}
                 className={`flex-1 py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
                   mode === m
                     ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg shadow-orange-500/20'
@@ -168,16 +184,30 @@ export function Auth() {
               </div>
             </div>
 
+            {/* Captcha — registration only */}
+            {mode === 'register' && (
+              <CaptchaBox
+                onStatusChange={setCaptchaVerified}
+                resetTrigger={captchaResetKey}
+                compact
+              />
+            )}
+
             {/* Submit button */}
             <button
               type="submit"
-              disabled={loading}
+              disabled={loading || (mode === 'register' && !captchaVerified)}
               className="w-full py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-orange-500 text-white text-sm font-bold hover:from-amber-600 hover:to-orange-600 transition-all shadow-lg shadow-orange-500/20 flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed mt-2"
             >
               {loading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
                   {mode === 'login' ? 'Signing in...' : 'Creating account...'}
+                </>
+              ) : mode === 'register' && !captchaVerified ? (
+                <>
+                  <Shield className="w-4 h-4" />
+                  Complete Captcha to Register
                 </>
               ) : (
                 <>
@@ -205,7 +235,7 @@ export function Auth() {
         {/* Features cards */}
         <div className="mt-8 grid grid-cols-3 gap-3">
           {[
-            { icon: <Shield className="w-4 h-4 text-green-400" />, label: 'Secure Auth', sub: 'End-to-end encrypted' },
+            { icon: <Shield className="w-4 h-4 text-green-400" />, label: 'Secure Auth', sub: 'hCaptcha protected' },
             { icon: <Zap className="w-4 h-4 text-amber-400" />, label: 'Instant Payouts', sub: 'Via FaucetPay' },
             { icon: <Globe className="w-4 h-4 text-cyan-400" />, label: 'Global Access', sub: 'Worldwide earning' },
           ].map((f, i) => (

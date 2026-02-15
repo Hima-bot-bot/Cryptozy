@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
 import { useAuth } from '../context/AuthContext';
 import { fetchWithdrawals, type DbWithdrawal } from '../lib/database';
+import { CaptchaBox } from '../components/CaptchaBox';
 import {
   Wallet, Bitcoin, ArrowRight, Shield, Clock,
   CheckCircle2, AlertCircle, Zap, Copy, Check, Loader2,
@@ -44,6 +45,10 @@ export function Withdraw() {
   const [success, setSuccess] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
+  // Captcha state
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
   // Real withdrawals from DB
   const [withdrawals, setWithdrawals] = useState<DbWithdrawal[]>([]);
   const [withdrawalsLoading, setWithdrawalsLoading] = useState(true);
@@ -65,7 +70,8 @@ export function Withdraw() {
     numAmount >= method.minAmount &&
     numAmount <= balanceSatoshi &&
     address.length > 10 &&
-    !processing;
+    !processing &&
+    captchaVerified;
   const netAmount = Math.max(0, numAmount - method.fee);
 
   const handleWithdraw = async () => {
@@ -79,7 +85,9 @@ export function Withdraw() {
       setSuccess(true);
       setAmount('');
       setAddress('');
-      loadWithdrawals(); // refresh list
+      loadWithdrawals();
+      // Reset captcha after withdrawal
+      setCaptchaResetKey(k => k + 1);
       setTimeout(() => setSuccess(false), 4000);
     }
   };
@@ -241,6 +249,12 @@ export function Withdraw() {
             </div>
           )}
 
+          {/* hCaptcha verification */}
+          <CaptchaBox
+            onStatusChange={setCaptchaVerified}
+            resetTrigger={captchaResetKey}
+          />
+
           {/* Withdraw button */}
           <button
             onClick={handleWithdraw}
@@ -255,6 +269,11 @@ export function Withdraw() {
               <>
                 <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 Processing...
+              </>
+            ) : !captchaVerified ? (
+              <>
+                <Shield className="w-4 h-4" />
+                Complete Captcha First
               </>
             ) : (
               <>
@@ -290,7 +309,7 @@ export function Withdraw() {
               },
               {
                 label: 'Security',
-                value: '2FA Enabled',
+                value: 'hCaptcha + 2FA',
                 icon: <Shield className="w-3.5 h-3.5 text-green-400" />,
               },
             ].map((item, i) => (

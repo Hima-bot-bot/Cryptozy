@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
+import { CaptchaBox } from '../components/CaptchaBox';
 import { Gift, Coins, Star, Clock, CheckCircle2, Search, TrendingUp, Users, Trophy } from 'lucide-react';
 
 type Offer = {
@@ -45,9 +46,14 @@ export function OfferWall() {
   const [catFilter, setCatFilter] = useState('All');
   const [sortBy, setSortBy] = useState<'reward' | 'popularity'>('popularity');
 
+  // Captcha state
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
   const categories = ['All', ...Array.from(new Set(initialOffers.map(o => o.category)))];
 
   const startOffer = useCallback((id: number) => {
+    if (!captchaVerified) return;
     setOffers(prev => prev.map(o => o.id === id ? { ...o, completing: true } : o));
     const offer = offers.find(o => o.id === id);
     if (!offer) return;
@@ -55,8 +61,10 @@ export function OfferWall() {
     setTimeout(() => {
       earnFromOffer(offer.reward);
       setOffers(prev => prev.map(o => o.id === id ? { ...o, completed: true, completing: false } : o));
+      // Reset captcha after earning
+      setCaptchaResetKey(k => k + 1);
     }, 2000);
-  }, [offers, earnFromOffer]);
+  }, [offers, earnFromOffer, captchaVerified]);
 
   let filtered = offers
     .filter(o => catFilter === 'All' || o.category === catFilter)
@@ -92,6 +100,12 @@ export function OfferWall() {
           </div>
         ))}
       </div>
+
+      {/* hCaptcha verification */}
+      <CaptchaBox
+        onStatusChange={setCaptchaVerified}
+        resetTrigger={captchaResetKey}
+      />
 
       {/* Search and filters */}
       <div className="flex flex-col sm:flex-row gap-3">
@@ -167,18 +181,20 @@ export function OfferWall() {
                 </div>
                 <button
                   onClick={() => startOffer(offer.id)}
-                  disabled={offer.completed || offer.completing}
+                  disabled={offer.completed || offer.completing || !captchaVerified}
                   className={`px-6 py-2 rounded-lg text-xs font-semibold transition-all min-w-[100px] ${
                     offer.completed
                       ? 'bg-green-500/10 text-green-400 border border-green-500/20'
                       : offer.completing
                         ? 'bg-green-500/20 text-green-300 border border-green-500/30 animate-pulse'
-                        : 'bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600 shadow-lg shadow-green-500/20'
+                        : !captchaVerified
+                          ? 'bg-gray-800/50 text-gray-600 border border-gray-800 cursor-not-allowed'
+                          : 'bg-gradient-to-r from-green-500 to-emerald-500 text-white hover:from-green-600 hover:to-emerald-600 shadow-lg shadow-green-500/20'
                   }`}
                 >
                   {offer.completed ? (
                     <span className="flex items-center gap-1 justify-center"><CheckCircle2 className="w-3.5 h-3.5" /> Done</span>
-                  ) : offer.completing ? 'Completing...' : 'Start Offer'}
+                  ) : offer.completing ? 'Completing...' : !captchaVerified ? '🔒 Verify' : 'Start Offer'}
                 </button>
               </div>
             </div>

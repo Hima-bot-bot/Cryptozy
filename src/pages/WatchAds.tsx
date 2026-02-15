@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
+import { CaptchaBox } from '../components/CaptchaBox';
 import { Tv, Clock, Coins, Star, Eye, CheckCircle2, Timer, Sparkles } from 'lucide-react';
 
 type Ad = {
@@ -38,11 +39,15 @@ export function WatchAds() {
   const [countdown, setCountdown] = useState(0);
   const [earnedPopup, setEarnedPopup] = useState<{ amount: number; show: boolean }>({ amount: 0, show: false });
 
+  // Captcha state
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
   const startWatching = useCallback((ad: Ad) => {
-    if (watchingId !== null || ad.watched) return;
+    if (watchingId !== null || ad.watched || !captchaVerified) return;
     setWatchingId(ad.id);
     setCountdown(ad.duration);
-  }, [watchingId]);
+  }, [watchingId, captchaVerified]);
 
   useEffect(() => {
     if (watchingId === null || countdown <= 0) return;
@@ -60,6 +65,8 @@ export function WatchAds() {
         setTimeout(() => setEarnedPopup({ amount: 0, show: false }), 2500);
       }
       setWatchingId(null);
+      // Reset captcha after earning
+      setCaptchaResetKey(k => k + 1);
     }
   }, [watchingId, countdown, ads, earnFromAd]);
 
@@ -106,12 +113,19 @@ export function WatchAds() {
         ))}
       </div>
 
+      {/* hCaptcha verification */}
+      <CaptchaBox
+        onStatusChange={setCaptchaVerified}
+        resetTrigger={captchaResetKey}
+      />
+
       {/* Ads list */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {ads.map(ad => {
           const isWatching = watchingId === ad.id;
           const style = typeStyles[ad.type];
           const progress = isWatching ? ((ad.duration - countdown) / ad.duration) * 100 : 0;
+          const isDisabled = isWatching || ad.watched || watchingId !== null || !captchaVerified;
 
           return (
             <div key={ad.id} className={`relative rounded-xl bg-[#111633] border border-gray-800/50 overflow-hidden transition-all duration-300 ${ad.watched ? 'opacity-50' : 'hover:border-gray-700'} ${style.glow}`}>
@@ -156,18 +170,18 @@ export function WatchAds() {
               <div className="p-4 pt-2">
                 <button
                   onClick={() => startWatching(ad)}
-                  disabled={isWatching || ad.watched || watchingId !== null}
+                  disabled={isDisabled}
                   className={`w-full py-2.5 rounded-lg text-sm font-semibold transition-all duration-200 ${
                     ad.watched
                       ? 'bg-green-500/10 text-green-400 border border-green-500/20 cursor-default'
                       : isWatching
                         ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30 cursor-wait'
-                        : watchingId !== null
+                        : (watchingId !== null || !captchaVerified)
                           ? 'bg-gray-800/50 text-gray-600 border border-gray-800 cursor-not-allowed'
                           : 'bg-gradient-to-r from-blue-500 to-cyan-500 text-white hover:from-blue-600 hover:to-cyan-600 shadow-lg shadow-blue-500/20 cursor-pointer'
                   }`}
                 >
-                  {ad.watched ? '✓ Watched' : isWatching ? `Watching (${countdown}s)` : 'Watch Ad'}
+                  {ad.watched ? '✓ Watched' : isWatching ? `Watching (${countdown}s)` : !captchaVerified ? '🔒 Verify First' : 'Watch Ad'}
                 </button>
               </div>
             </div>

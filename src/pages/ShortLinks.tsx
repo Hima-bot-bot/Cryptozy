@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useApp } from '../context/AppContext';
+import { CaptchaBox } from '../components/CaptchaBox';
 import { Link2, Coins, ExternalLink, CheckCircle2, Clock, Shield, Zap, Globe } from 'lucide-react';
 
 type ShortLink = {
@@ -38,11 +39,15 @@ export function ShortLinks() {
   const [countdown, setCountdown] = useState(0);
   const [filter, setFilter] = useState<'all' | 'easy' | 'medium' | 'hard'>('all');
 
+  // Captcha state
+  const [captchaVerified, setCaptchaVerified] = useState(false);
+  const [captchaResetKey, setCaptchaResetKey] = useState(0);
+
   const startVisiting = useCallback((link: ShortLink) => {
-    if (visitingId !== null || link.completed) return;
+    if (visitingId !== null || link.completed || !captchaVerified) return;
     setVisitingId(link.id);
     setCountdown(link.difficulty === 'easy' ? 5 : link.difficulty === 'medium' ? 8 : 12);
-  }, [visitingId]);
+  }, [visitingId, captchaVerified]);
 
   useEffect(() => {
     if (visitingId === null || countdown <= 0) return;
@@ -58,6 +63,8 @@ export function ShortLinks() {
         setLinks(prev => prev.map(l => l.id === visitingId ? { ...l, completed: true } : l));
       }
       setVisitingId(null);
+      // Reset captcha after earning
+      setCaptchaResetKey(k => k + 1);
     }
   }, [visitingId, countdown, links, earnFromLink]);
 
@@ -90,6 +97,12 @@ export function ShortLinks() {
           </div>
         ))}
       </div>
+
+      {/* hCaptcha verification */}
+      <CaptchaBox
+        onStatusChange={setCaptchaVerified}
+        resetTrigger={captchaResetKey}
+      />
 
       {/* Filters */}
       <div className="flex gap-2">
@@ -124,6 +137,7 @@ export function ShortLinks() {
             <tbody className="divide-y divide-gray-800/50">
               {filtered.map(link => {
                 const isVisiting = visitingId === link.id;
+                const isDisabled = isVisiting || link.completed || visitingId !== null || !captchaVerified;
                 return (
                   <tr key={link.id} className={`hover:bg-gray-800/20 transition-colors ${link.completed ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
@@ -146,13 +160,13 @@ export function ShortLinks() {
                     <td className="px-4 py-3 text-center">
                       <button
                         onClick={() => startVisiting(link)}
-                        disabled={isVisiting || link.completed || visitingId !== null}
+                        disabled={isDisabled}
                         className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
                           link.completed
                             ? 'bg-green-500/10 text-green-400 border border-green-500/20'
                             : isVisiting
                               ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/30'
-                              : visitingId !== null
+                              : (visitingId !== null || !captchaVerified)
                                 ? 'bg-gray-800/50 text-gray-600 border border-gray-800'
                                 : 'bg-gradient-to-r from-cyan-500 to-teal-500 text-white hover:from-cyan-600 hover:to-teal-600 shadow-lg shadow-cyan-500/20'
                         }`}
@@ -161,7 +175,7 @@ export function ShortLinks() {
                           <span className="flex items-center gap-1"><CheckCircle2 className="w-3 h-3" /> Done</span>
                         ) : isVisiting ? (
                           <span className="flex items-center gap-1"><Clock className="w-3 h-3 animate-spin" /> {countdown}s</span>
-                        ) : 'Visit'}
+                        ) : !captchaVerified ? '🔒 Verify' : 'Visit'}
                       </button>
                     </td>
                   </tr>
